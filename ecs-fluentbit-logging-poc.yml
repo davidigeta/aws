@@ -250,7 +250,7 @@ Resources:
               Value: TEST_VALUE
             - Name: TEST_ENV_LOG
               Value: INFO
-        - Name: !Sub 'fluentbit-container-definition'
+        - Name: fluentbit-container-definition
           Image: amazon/aws-for-fluent-bit
           LogConfiguration:
             LogDriver: awslogs
