@@ -1,0 +1,279 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: POC for using fluentbit to send logs to multiple CloudWatch log groups. Requires existing VPC and subnet.
+
+Parameters:
+  pEcsAmiId:
+    Type: String
+    Description: AMI used in ECS cluster. Use the latest ECS-optimized AMI from Amazon.
+    Default: ami-01783fbb0757adced
+
+  pAmiType:
+    Type: String
+    Default: t2.small
+    Description: Ensure the AMI CPU and MEM are enough for your application.
+
+  pRootDeviceName:
+    Type: String
+    Default: /dev/xvda
+    Description: Ensure this matches the block device of your AMI.
+
+  pMyInboundIpAddress:
+    Type: String
+    Description: Your IPv4 address in CIDR notation. This IP is used to restrict access to the security group created in this template. Use a RFC 1918 IPs if deployed in a private subnet.
+    Default: changeme
+
+  pAvailabilityZones:
+    Type: List<AWS::EC2::AvailabilityZone::Name>
+    Description: List of AZs you want your EC2 instances to be deployed in.
+    Default: changeme
+
+  pVpcId:
+    Type: String
+    Description: VPC ID you want to deploye your ECS cluster in.
+    Default: changeme
+
+  pAsgSubnets:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnets for ASG instances. Subnets must exist in the AZs and VPC specified above.
+    Default: changeme
+
+  pAppName:
+    Type: String
+    Default: changeme
+    Description: The name of the application.
+
+  pAppEcrImage:
+    Type: String
+    Default: changeme
+    Description: Container image of your application.
+
+  pAppLogPath:
+    Type: String
+    Default: changeme
+    Description: File path in the application container where you want fluentbit to log.
+
+  pFluentbitLogPath:
+    Type: String
+    Default: /fluent-bit/etc
+    Description: File path to fluent-bit.conf file in fluentbit. This is used in a volume mount so you can modify fluentbit configs after restarting the container.
+
+  pNetworkMode:
+    Type: String
+    Default: host
+    AllowedValues:
+      - awsvpc
+      - bridge
+      - host
+      - none
+
+  pVolumeScope:
+    Type: String
+    Default: shared
+    AllowedValues:
+      - shared
+      - task
+
+  pLogDriver:
+    Type: String
+    Default: awslogs
+    AllowedValues:
+      - awsfirelens
+      - awslogs
+      - fluentd
+      - gelf
+      - journald
+      - json-file
+      - splunk
+      - syslog
+
+Resources:
+  rEcsInstanceProfileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: 'sts:AssumeRole'
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonEC2RoleforSSM' # Needed in order to login to EC2 instance using Session Manager
+        - 'arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role'
+
+  rEcsInstanceProfile: 
+    Type: AWS::IAM::InstanceProfile
+    Properties: 
+      Path: /
+      Roles: 
+        - !Ref rEcsInstanceProfileRole
+
+  rEcsAsgSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties: 
+      GroupDescription: String
+      GroupName: String
+      SecurityGroupEgress: 
+      - CidrIp: 0.0.0.0/0
+        Description: Allow outbound 443 to anywhere.
+        FromPort: 443
+        IpProtocol: tcp
+        ToPort: 443
+      SecurityGroupIngress: 
+      - CidrIp: !Ref pMyInboundIpAddress
+        Description: Allow inbound 443 to only MyIP address
+        FromPort: 443
+        IpProtocol: tcp
+        ToPort: 443
+      VpcId: !Ref pVpcId
+
+  rEcsCluster:
+    Type: AWS::ECS::Cluster
+    Properties: 
+      ClusterSettings:
+        - Name: containerInsights # Ensure your task execution role has necessary cloudwatch permissions if this is used
+          Value: enabled
+
+  rEcsLaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId: !Ref pEcsAmiId
+      InstanceType: !Ref pAmiType
+      AssociatePublicIpAddress: false
+      IamInstanceProfile: !GetAtt rEcsInstanceProfile.Arn
+      SecurityGroups:
+        - !Ref rEcsAsgSecurityGroup
+      BlockDeviceMappings:
+        - DeviceName: !Ref pRootDeviceName
+          Ebs:
+            VolumeSize: 30
+            VolumeType: gp2
+      UserData:
+        Fn::Base64:
+          !Sub |
+            #!/bin/bash
+            echo ECS_CLUSTER=${rEcsCluster} >> /etc/ecs/ecs.config;echo ECS_BACKEND_HOST= >> /etc/ecs/ecs.config;
+
+  rEcsInstanceAsg:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      AvailabilityZones: !Ref pAvailabilityZones
+      LaunchConfigurationName: !Ref rEcsLaunchConfig
+      MinSize: '0'
+      MaxSize: '1'
+      DesiredCapacity: '1'
+      VPCZoneIdentifier: !Ref pAsgSubnets
+
+  rTaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Statement:
+            - Sid: CreateLogGroups
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+              Resource: "*"
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy'
+
+  rAppTaskRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: CloudWatchLogs
+          PolicyDocument:
+            Statement:
+            - Sid: CreateLogGroups
+              Effect: Allow
+              Action:
+                - logs:CreateLogGroup
+                - logs:CreateLogStream
+                - logs:PutLogEvents
+              Resource: "*"
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess' # Only needed if you are referencing S3 objects in your task definition
+        - 'arn:aws:iam::aws:policy/AmazonSSMReadOnlyAccess' # Only needed if you are referencing SSM parameters in your task definition
+
+  rAppTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: !Sub '${pAppName}-task-definition'
+      NetworkMode: !Ref pNetworkMode
+      RequiresCompatibilities:
+        - EC2
+      ExecutionRoleArn: !GetAtt rTaskExecutionRole.Arn
+      TaskRoleArn: !GetAtt rAppTaskRole.Arn
+      Cpu: '1024' # 1 vCPU
+      Memory: '1024' # 1 GB
+      Volumes:
+        - Name: !Sub '${pAppName}-logs-vol'
+          DockerVolumeConfiguration:
+            Scope: !Ref pVolumeScope
+            Autoprovision: true
+        - Name: !Sub '${pAppName}-fluentbit-configs-vol'
+          DockerVolumeConfiguration:
+            Scope: !Ref pVolumeScope
+            Autoprovision: true
+      ContainerDefinitions:
+        - Name: !Sub '${pAppName}-container-definition'
+          Image: !Ref pAppEcrImage
+          LogConfiguration:
+            LogDriver: !Ref pLogDriver
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Sub '/ecs/${rEcsCluster}/${pAppName}'
+              awslogs-create-group: 'true'
+              awslogs-stream-prefix: !Ref pAppName
+              awslogs-datetime-format: '%Y-%m-%d %H:%M:%S%L'
+          Cpu: '512'
+          Memory: '512'
+          MountPoints:
+            - SourceVolume: !Sub '${pAppName}-logs-vol'
+              ContainerPath: !Ref pAppLogPath
+              ReadOnly: false
+          Environment:
+            - Name: TEST_ENV
+              Value: TEST_VALUE
+            - Name: TEST_ENV_LOG
+              Value: INFO
+        - Name: !Sub 'fluentbit-container-definition'
+          Image: amazon/aws-for-fluent-bit
+          LogConfiguration:
+            LogDriver: awslogs
+            Options:
+              awslogs-region: !Ref AWS::Region
+              awslogs-group: !Sub '/ecs/${rEcsCluster}/fluentbit'
+              awslogs-create-group: 'true'
+              awslogs-stream-prefix: fluentbit
+              awslogs-datetime-format: '%Y-%m-%d %H:%M:%S%L'
+          Cpu: '512'
+          Memory: '512'
+          MountPoints:
+            - SourceVolume: !Sub '${pAppName}-fluentbit-configs-vol'
+              ContainerPath: !Ref pFluentbitLogPath
+              ReadOnly: false
+          VolumesFrom:
+            - SourceContainer: !Sub '${pAppName}-container-definition'
+              ReadOnly: true
+          Environment:
+            - Name: TEST_ENV
+              Value: TEST_VALUE
+            - Name: TEST_ENV_LOG
+              Value: INFO
+      Tags:
+        - Key: SWA:SampleTag
+          Value: test
