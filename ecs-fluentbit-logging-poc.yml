@@ -55,7 +55,7 @@ Parameters:
   pFluentbitLogPath:
     Type: String
     Default: /fluent-bit/etc
-    Description: File path to fluent-bit.conf file in fluentbit. This is used in a volume mount so you can modify fluentbit configs after restarting the container.
+    Description: File path to fluent-bit.conf file. Used in a volume mount so that config changes persist after container restart.
 
   pNetworkMode:
     Type: String
