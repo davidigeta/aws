@@ -277,3 +277,17 @@ Resources:
       Tags:
         - Key: SampleTag
           Value: test
+
+  rEcsService:
+    Type: AWS::ECS::Service
+    Properties: 
+      Cluster: !Ref rEcsCluster
+      DesiredCount: 1
+      EnableECSManagedTags: true
+      EnableExecuteCommand: false
+      LaunchType: EC2
+      SchedulingStrategy: REPLICA
+      Tags: 
+        - Key: TEST_KEY
+          Value: TEST_VALUE
+      TaskDefinition: !Ref rAppTaskDefinition
