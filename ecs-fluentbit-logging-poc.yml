@@ -29,7 +29,7 @@ Parameters:
 
   pVpcId:
     Type: String
-    Description: VPC ID you want to deploye your ECS cluster in.
+    Description: VPC ID you want to deploy your ECS cluster in.
     Default: changeme
 
   pAsgSubnets:
